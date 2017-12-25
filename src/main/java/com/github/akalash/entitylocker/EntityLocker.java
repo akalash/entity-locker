@@ -11,50 +11,47 @@ import java.util.stream.Collectors;
  */
 public class EntityLocker {
 
-    ConcurrentHashMap<Object, AtomLockHolder> lockStorage = new ConcurrentHashMap<>();
+    ConcurrentHashMap<Object, AtomLock> lockStorage = new ConcurrentHashMap<>();
     ReentrantReadWriteLock globalLock = new ReentrantReadWriteLock();
 
-    public EntityLock lock(Object id, Object... ids) {
-        HashSet<Object> lockIds = new HashSet<>(Arrays.asList(ids));
-        lockIds.add(id);
-
-        List<AtomLockHolder.AtomLock> lockHolders = lockIds.stream()
-                .sorted(Comparator.comparingInt(Object::hashCode))
-                .map(idKey -> lockStorage.compute(
-                        idKey,
-                        (key, holder) -> (holder == null ? new AtomLockHolder(globalLock, key) : holder).acquire()
-                ))
-                .map(AtomLockHolder::getLock)
-                .collect(Collectors.toList());
-        EntityLock entityLock = new EntityLock(lockStorage, lockHolders);
-        entityLock.lock();
-        return entityLock;
+    public EntityUnlocker lock(Object id, Object... ids) {
+        return lock(resolveLock(id, ids));
     }
 
+    public void isolate(Object id, Runnable runnable) {
+        isolate(runnable, id);
+    }
 
-    public static class EntityLock {
-        private static final AtomLockHolder UNUSED_HOLDER = new AtomLockHolder(null, null);
-        private final ConcurrentHashMap<Object, AtomLockHolder> lockStorage;
-        private final List<AtomLockHolder.AtomLock> atomLocks;
+    public void isolate(Object id1, Object id2, Runnable runnable) {
+        isolate(runnable, id1, id2);
+    }
 
-        public EntityLock(ConcurrentHashMap<Object, AtomLockHolder> lockStorage, List<AtomLockHolder.AtomLock> atomLocks) {
-            this.lockStorage = lockStorage;
-            this.atomLocks = atomLocks;
+    private void isolate(Runnable runnable, Object id, Object... ids) {
+        EntityLock entityLock = resolveLock(id, ids);
+        entityLock.lock();
+        try {
+            runnable.run();
+        } finally {
+            entityLock.unlock();
+        }
+    }
+
+    public EntityUnlocker globalLock() {
+        return lock(new GlobalEntityLock(globalLock));
+    }
+
+    private EntityUnlocker lock(EntityLock lock) {
+        lock.lock();
+        return lock;
+    }
+
+    private EntityLock resolveLock(Object id, Object... ids) {
+        if (ids.length == 0) {
+            return new ComplexEntityLock(lockStorage, Collections.singletonList(id), globalLock);
         }
 
-        private void lock() {
-            for (AtomLockHolder.AtomLock atomLock : atomLocks) {
-                atomLock.lock();
-            }
-        }
-
-        public void unlock() {
-            ListIterator<AtomLockHolder.AtomLock> atomLockListIterator = atomLocks.listIterator(atomLocks.size());
-            while (atomLockListIterator.hasPrevious()) {
-                AtomLockHolder.AtomLock previous = atomLockListIterator.previous();
-                previous.unlock();
-                lockStorage.compute(previous.getLockedObject(), (key, lock) -> lock.getAcquiredLockCount() == 0 ? null : lock);
-            }
-        }
+        HashSet<Object> lockIds = new HashSet<>(Arrays.asList(ids));
+        lockIds.add(id);
+        return new ComplexEntityLock(lockStorage, lockIds, globalLock);
     }
 }
