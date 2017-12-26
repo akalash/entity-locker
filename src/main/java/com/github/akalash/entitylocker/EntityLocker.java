@@ -6,52 +6,67 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
 /**
- * @author Kalashnikov Anton <akalash.dev@gmail.com>
+ * Helper for protected execution code by some object.
+ * Execution code have isolated from other code with same id.
+ *
+ * @author Kalashnikov Anton <kaa.dev@yandex.ru>
  * @since 24.12.2017
  */
 public class EntityLocker {
 
-    ConcurrentHashMap<Object, AtomLock> lockStorage = new ConcurrentHashMap<>();
-    ReentrantReadWriteLock globalLock = new ReentrantReadWriteLock();
+    private final ConcurrentHashMap<Object, EntityAtomicLock> lockStorage = new ConcurrentHashMap<>();
+    private final ReentrantReadWriteLock globalLock = new ReentrantReadWriteLock();
+    private final EntityLock globalEntityLock = new GlobalEntityLock(globalLock);
 
-    public EntityUnlocker lock(Object id, Object... ids) {
-        return lock(resolveLock(id, ids));
+    /**
+     * Execution protected code which not executed concurrently with any other protected code.
+     *
+     * @param protectedCode code which should be executed isolated
+     */
+    public void globalExclusive(Runnable protectedCode) {
+        exclusive(globalEntityLock, protectedCode);
     }
 
-    public void isolate(Object id, Runnable runnable) {
-        isolate(runnable, id);
+    /**
+     * Execution protected code which not executed concurrently with protected code with same id.
+     *
+     * @param protectedCode code which should be executed isolated
+     */
+    public void exclusive(Object id, Runnable protectedCode) {
+        exclusive(protectedCode, id);
     }
 
-    public void isolate(Object id1, Object id2, Runnable runnable) {
-        isolate(runnable, id1, id2);
+    /**
+     * Execution protected code which not executed concurrently with protected code with same ids.
+     *
+     * @param protectedCode code which should be executed isolated
+     */
+    public void exclusive(Object id1, Object id2, Runnable protectedCode) {
+        exclusive(protectedCode, id1, id2);
     }
 
-    private void isolate(Runnable runnable, Object id, Object... ids) {
-        EntityLock entityLock = resolveLock(id, ids);
+    private void exclusive(Runnable protectedCode, Object... ids) {
+        exclusive(resolveLock(ids), protectedCode);
+    }
+
+    private void exclusive(EntityLock entityLock, Runnable protectedCode) {
         entityLock.lock();
         try {
-            runnable.run();
+            protectedCode.run();
         } finally {
             entityLock.unlock();
         }
     }
 
-    public EntityUnlocker globalLock() {
-        return lock(new GlobalEntityLock(globalLock));
-    }
+    private EntityLock resolveLock(Object... ids) {
+        List<EntityAtomicLock> entityAtomicLocks = new HashSet<>(Arrays.asList(ids)).stream()
+                .sorted(Comparator.comparingInt(Object::hashCode))
+                .map(idKey -> lockStorage.compute(
+                        idKey,
+                        (key, holder) -> (holder == null ? new EntityAtomicLock(key, globalLock) : holder).prelock()
+                ))
+                .collect(Collectors.toList());
 
-    private EntityUnlocker lock(EntityLock lock) {
-        lock.lock();
-        return lock;
-    }
-
-    private EntityLock resolveLock(Object id, Object... ids) {
-        if (ids.length == 0) {
-            return new ComplexEntityLock(lockStorage, Collections.singletonList(id), globalLock);
-        }
-
-        HashSet<Object> lockIds = new HashSet<>(Arrays.asList(ids));
-        lockIds.add(id);
-        return new ComplexEntityLock(lockStorage, lockIds, globalLock);
+        return new ComplexEntityLock(lockStorage, entityAtomicLocks);
     }
 }

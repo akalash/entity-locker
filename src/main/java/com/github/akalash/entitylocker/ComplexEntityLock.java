@@ -8,31 +8,36 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
-public class ComplexEntityLock implements EntityLock {
-    private final ConcurrentHashMap<Object, AtomLock> lockStorage;
-    private final List<AtomLock> atomLocks;
+/**
+ * Implementation of {@link EntityLock} which lock several object in one time.
+ *
+ * @author Kalashnikov Anton <kaa.dev@yandex.ru>
+ * @since 24.12.2017
+ */
+class ComplexEntityLock implements EntityLock {
+    private final ConcurrentHashMap<Object, EntityAtomicLock> lockStorage;
+    private final List<EntityAtomicLock> entityAtomicLocks;
 
-    public ComplexEntityLock(ConcurrentHashMap<Object, AtomLock> lockStorage, Collection<Object> lockIds, ReentrantReadWriteLock globalLock) {
+    ComplexEntityLock(ConcurrentHashMap<Object, EntityAtomicLock> lockStorage, List<EntityAtomicLock> entityAtomicLocks) {
         this.lockStorage = lockStorage;
-        atomLocks = lockIds.stream()
-                .sorted(Comparator.comparingInt(Object::hashCode))
-                .map(idKey -> lockStorage.compute(
-                        idKey,
-                        (key, holder) -> (holder == null ? new AtomLock(key, globalLock) : holder).prelock()
-                ))
-                .collect(Collectors.toList());
+        this.entityAtomicLocks = entityAtomicLocks;
     }
 
+    @Override
     public void lock() {
-        for (AtomLock atomLock : atomLocks) {
-            atomLock.lock();
+        for (EntityAtomicLock entityAtomicLock : entityAtomicLocks) {
+            entityAtomicLock.lock();
         }
     }
 
+    /**
+     * Unlocked current locks and remove their from common storage if it have not use.
+     */
+    @Override
     public void unlock() {
-        ListIterator<AtomLock> atomLockListIterator = atomLocks.listIterator(atomLocks.size());
+        ListIterator<EntityAtomicLock> atomLockListIterator = entityAtomicLocks.listIterator(entityAtomicLocks.size());
         while (atomLockListIterator.hasPrevious()) {
-            AtomLock previous = atomLockListIterator.previous();
+            EntityAtomicLock previous = atomLockListIterator.previous();
             previous.unlock();
             lockStorage.compute(previous.getLockedObject(), (key, lock) -> lock.hasWaiters() ? lock : null);
         }
